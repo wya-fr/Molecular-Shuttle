@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分子梭 (Molecular Shuttle) 3D 模擬</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #0f172a; }
+        #canvas-container { width: 100vw; height: 100vh; cursor: grab; }
+        #canvas-container:active { cursor: grabbing; }
+        
+        /* 側邊欄動畫 */
+        #ui-panel {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ui-collapsed {
+            transform: translateX(-90%);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <!-- 可收納式控制面板 -->
+    <div id="ui-panel" class="absolute top-4 left-4 z-20 flex items-start gap-2">
+        <div class="bg-black/80 backdrop-blur-lg p-5 rounded-2xl border border-white/10 text-white w-72 shadow-2xl">
+            <div class="flex justify-between items-center mb-4">
+                <h1 class="text-lg font-bold">分子梭模擬器</h1>
+                <span class="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded border border-blue-500/30 uppercase tracking-wider">Nano Tech</span>
+            </div>
+            
+            <p class="text-xs text-gray-400 mb-5 leading-relaxed">
+                這是 2016 諾貝爾獎<b>輪烷 (Rotaxane)</b> 模型。大環（黃色）在軸上受外部刺激於站點間穿梭。
+            </p>
+            
+            <div class="space-y-3 mb-6 bg-white/5 p-3 rounded-xl border border-white/5">
+                <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-red-500"></div>
+                        <span>阻斷基團 (Stoppers)</span>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-yellow-400"></div>
+                        <span>大環 (Macrocycle)</span>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-blue-500"></div>
+                        <span>站點 A (Station A)</span>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                        <span>站點 B (Station B)</span>
+                    </div>
+                </div>
+            </div>
+
+            <button id="toggleBtn" class="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 text-white py-3 px-4 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                <span>切換站點狀態</span>
+            </button>
+            
+            <div class="mt-4 flex justify-between items-center text-[10px] text-gray-500">
+                <span>軌道控制: 滑鼠/觸控</span>
+                <span>v1.2</span>
+            </div>
+        </div>
+
+        <!-- 收納按鈕 -->
+        <button id="collapseBtn" class="bg-black/80 backdrop-blur-lg p-2 rounded-lg border border-white/10 text-white hover:bg-white/10 transition-colors">
+            <svg id="collapseIcon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+    </div>
+
+    <!-- 懸浮狀態標籤 (置中底部，不遮擋核心) -->
+    <div id="status-box" class="absolute bottom-8 left-1/2 -translate-x-1/2 z-10">
+        <div class="bg-black/40 backdrop-blur-md px-6 py-2 rounded-full border border-white/10 flex items-center gap-3">
+            <div id="status-indicator" class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></div>
+            <span class="text-white text-xs tracking-widest uppercase">
+                當前狀態：<span id="current-station" class="text-blue-400 font-bold">站點 A</span>
+            </span>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, controls, mainGroup;
+        let axle, shuttle, stopperL, stopperR;
+        let stationA, stationB;
+        
+        let targetX = -3;
+        let currentX = -3;
+        const lerpSpeed = 0.04;
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 4, 14);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxDistance = 25;
+            controls.minDistance = 5;
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+
+            const directLight = new THREE.DirectionalLight(0xffffff, 0.6);
+            directLight.position.set(5, 10, 7);
+            scene.add(directLight);
+
+            createMolecularModel();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            document.getElementById('toggleBtn').addEventListener('click', toggleStation);
+            
+            const uiPanel = document.getElementById('ui-panel');
+            const collapseBtn = document.getElementById('collapseBtn');
+            const collapseIcon = document.getElementById('collapseIcon');
+            
+            collapseBtn.addEventListener('click', () => {
+                uiPanel.classList.toggle('ui-collapsed');
+                if (uiPanel.classList.contains('ui-collapsed')) {
+                    collapseIcon.innerHTML = '<path d="m9 18 6-6-6-6"/>';
+                } else {
+                    collapseIcon.innerHTML = '<path d="m15 18-6-6 6-6"/>';
+                }
+            });
+        }
+
+        function createMolecularModel() {
+            mainGroup = new THREE.Group();
+
+            // 1. 軸 (Axle) - 更精緻的材質
+            const axleGeom = new THREE.CylinderGeometry(0.2, 0.2, 12, 32);
+            axleGeom.rotateZ(Math.PI / 2);
+            const axleMat = new THREE.MeshStandardMaterial({ 
+                color: 0x64748b, 
+                metalness: 0.6, 
+                roughness: 0.3 
+            });
+            axle = new THREE.Mesh(axleGeom, axleMat);
+            mainGroup.add(axle);
+
+            // 2. 阻斷基團 (Stoppers) - 使用多面體增加科學感
+            const stopperGeom = new THREE.IcosahedronGeometry(1.4, 1);
+            const stopperMat = new THREE.MeshStandardMaterial({ 
+                color: 0xef4444, 
+                emissive: 0x7f1d1d,
+                emissiveIntensity: 0.2,
+                roughness: 0.4,
+                metalness: 0.5
+            });
+            
+            stopperL = new THREE.Mesh(stopperGeom, stopperMat);
+            stopperL.position.x = -6.4;
+            mainGroup.add(stopperL);
+
+            stopperR = new THREE.Mesh(stopperGeom, stopperMat);
+            stopperR.position.x = 6.4;
+            mainGroup.add(stopperR);
+
+            // 3. 站點 (Stations)
+            const stationGeom = new THREE.CylinderGeometry(0.25, 0.25, 1.4, 32);
+            stationGeom.rotateZ(Math.PI / 2);
+            
+            stationA = new THREE.Mesh(stationGeom, new THREE.MeshStandardMaterial({ 
+                color: 0x3b82f6, 
+                emissive: 0x3b82f6, 
+                emissiveIntensity: 0.5 
+            }));
+            stationA.position.x = -3;
+            mainGroup.add(stationA);
+
+            stationB = new THREE.Mesh(stationGeom, new THREE.MeshStandardMaterial({ 
+                color: 0x22c55e, 
+                emissive: 0x22c55e, 
+                emissiveIntensity: 0.5 
+            }));
+            stationB.position.x = 3;
+            mainGroup.add(stationB);
+
+            // 4. 大環 (Macrocycle / Shuttle)
+            shuttle = new THREE.Group();
+            const sphereGeom = new THREE.SphereGeometry(0.35, 16, 16);
+            const shuttleMat = new THREE.MeshStandardMaterial({ 
+                color: 0xfacc15, 
+                metalness: 0.7, 
+                roughness: 0.2 
+            });
+            
+            const ringRadius = 1.2;
+            const segments = 10;
+            for (let i = 0; i < segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                const sphere = new THREE.Mesh(sphereGeom, shuttleMat);
+                sphere.position.y = Math.cos(angle) * ringRadius;
+                sphere.position.z = Math.sin(angle) * ringRadius;
+                shuttle.add(sphere);
+            }
+            
+            const torusGeom = new THREE.TorusGeometry(ringRadius, 0.12, 16, 60);
+            torusGeom.rotateY(Math.PI / 2);
+            const torus = new THREE.Mesh(torusGeom, shuttleMat);
+            shuttle.add(torus);
+
+            shuttle.position.x = currentX;
+            mainGroup.add(shuttle);
+
+            // 將整個模型稍微向右偏移，以避開左側 UI
+            mainGroup.position.x = 1;
+            scene.add(mainGroup);
+        }
+
+        function toggleStation() {
+            const statusIndicator = document.getElementById('status-indicator');
+            const stationLabel = document.getElementById('current-station');
+
+            if (targetX === -3) {
+                targetX = 3;
+                stationLabel.innerText = "站點 B";
+                stationLabel.className = "text-green-400 font-bold";
+                statusIndicator.className = "w-2 h-2 rounded-full bg-green-400 animate-pulse";
+            } else {
+                targetX = -3;
+                stationLabel.innerText = "站點 A";
+                stationLabel.className = "text-blue-400 font-bold";
+                statusIndicator.className = "w-2 h-2 rounded-full bg-blue-400 animate-pulse";
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            
+            // 行動裝置適配
+            if (window.innerWidth < 768) {
+                mainGroup.position.x = 0;
+                mainGroup.scale.set(0.7, 0.7, 0.7);
+            } else {
+                mainGroup.position.x = 1.5;
+                mainGroup.scale.set(1, 1, 1);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // 平滑位移
+            currentX += (targetX - currentX) * lerpSpeed;
+            shuttle.position.x = currentX;
+            
+            // 自轉
+            shuttle.rotation.x += 0.005;
+            
+            // 熱運動模擬 (微小震動)
+            const time = Date.now() * 0.0015;
+            stopperL.position.y = Math.sin(time) * 0.04;
+            stopperR.position.y = Math.cos(time) * 0.04;
+            mainGroup.rotation.y = Math.sin(time * 0.2) * 0.05;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.onload = () => {
+            init();
+            onWindowResize(); // 初始調整
+            animate();
+        };
+    </script>
+</body>
+</html>
